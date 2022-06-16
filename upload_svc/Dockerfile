@@ -1,18 +1,29 @@
-#FROM ekidd/rust-musl-builder:1.57.0 as build
-FROM messense/rust-musl-cross:aarch64-musl as build
-#FROM messense/rust-musl-cross:x86_64-musl as build
-#FROM rust:slim
+FROM rust:1.56.0 AS chef 
+# We only pay the installation cost once, 
+# it will be cached from the second build onwards
+RUN cargo install cargo-chef 
+WORKDIR app
 
-ADD --chown=rust:rust . ./
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare  --recipe-path recipe.json
 
-RUN cargo build --release --features vendored
+FROM chef AS builder
 
-FROM scratch
+WORKDIR /home/rust/src
 
-##COPY --from=build /home/rust/src/target/x86_64-unknown-linux-musl/release/upload_svc .
-##COPY --from=build /home/rust/src/target/arm-unknown-linux-musleabi/release/upload_svc .
-COPY --from=build /home/rust/src/target/aarch64-unknown-linux-musl/release/upload_svc .
+COPY --from=planner /app/recipe.json recipe.json
+# Build dependencies - this is the caching Docker layer!
+RUN cargo chef cook --release --features vendored --recipe-path recipe.json
 
-EXPOSE 3001
+# Build application
+COPY . .
+RUN cargo build --release --features vendored 
 
-CMD ["/upload_svc"]
+#RUN echo $(ls -l /home/rust/src/target/release)
+# We do not need the Rust toolchain to run the binary!
+FROM debian:buster-slim AS runtime
+WORKDIR app
+COPY --from=builder /home/rust/src/target/release/upload_svc .
+
+ENTRYPOINT ["/app/upload_svc"]
